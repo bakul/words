@@ -13,7 +13,8 @@ import (
 )
 
 var (
-	re = regexp.MustCompile("[^ \t]+")
+	spaceRE = regexp.MustCompile("[^ \t]+")
+	commaRE = regexp.MustCompile("[^ \t,]+")
 )
 
 type affix struct {
@@ -35,6 +36,8 @@ var rules map[string]*rule
 
 var flagv = flag.Bool("v", false, "print verbose output")
 var verbose bool
+
+var numflags bool
 
 type affixReader struct {
 	r	*bufio.Reader
@@ -64,12 +67,18 @@ func (a *affixReader) getRule() []string {
 			return nil
 		}
 		a.ln++
-		arg := re.FindAllString(string(line), -1)
-		if arg == nil || len(arg) == 0 {
+		arg := spaceRE.FindAllString(string(line), -1)
+		if arg == nil || len(arg) == 0 || arg[0][0] == '#' {
 			continue
 		}
+		//fmt.Fprintf(os.Stderr, "%d '%s'\n", len(arg), arg[0])
 		if arg[0] == "PFX" || arg[0] == "SFX" {
 			return arg
+		}
+		if arg[0] == "FLAG" {
+			if len(arg) > 1 && arg[1] == "num" {
+				numflags = true
+			}
 		}
 	}
 }
@@ -84,16 +93,16 @@ func processRules(f *os.File) {
 			break
 		}
 		if verbose {
-			fmt.Printf("%v\n", arg)
+			fmt.Fprintf(os.Stderr, "%v\n", arg)
 		}
 		flag := arg[1]
 		r, ok := rules[flag]
 		if ok {
-			fmt.Printf("%s: duplicate rule @ line %d\n", flag, r.ln)
+			fmt.Fprintf(os.Stderr, "%s: duplicate rule @ line %d\n", flag, r.ln)
 		}
 		count, err := strconv.Atoi(arg[3])
 		if err != nil {
-			fmt.Printf("%s: badcount: %v\n", flag, arg[3])
+			fmt.Fprintf(os.Stderr, "%s: badcount: %v\n", flag, arg[3])
 			continue
 		}
 		r = &rule{name:flag,ln:a.ln, affix:make([]*affix, count)}
@@ -106,7 +115,7 @@ func processRules(f *os.File) {
 		for i := range r.affix {
 			arg := a.getRule()
 			if arg == nil {
-				fmt.Printf("%s: file too short\n", flag)
+				fmt.Fprintf(os.Stderr, "%s: file too short\n", flag)
 				panic("bad affix file")
 			}
 			x := &affix{strip:arg[2], affix:arg[3]}
@@ -122,7 +131,7 @@ func processRules(f *os.File) {
 					x.re, err = regexp.Compile("^"+x.cond+".*")
 				}
 				if err != nil {
-					fmt.Printf("%s:%d: %v\n", err)
+					fmt.Fprintf(os.Stderr, "%s:%d: %v\n", err)
 				}
 			}
 			r.affix[i] = x
@@ -130,9 +139,9 @@ func processRules(f *os.File) {
 		rules[flag] = r
 	}
 	if verbose {
-		fmt.Printf("rules:\n")
+		fmt.Fprintf(os.Stderr, "rules:\n")
 		for _, r := range rules {
-			fmt.Printf("%v\n", r)
+			fmt.Fprintf(os.Stderr, "%v\n", r)
 		}
 	}
 }
@@ -148,7 +157,7 @@ func processDict(f *os.File) error {
 		panic(fmt.Sprintf("error: %v", err.Error()))
 	}
 	if verbose {
-		fmt.Printf("%d words\n", count)
+		fmt.Fprintf(os.Stderr, "%d words\n\n", count)
 	}
 	words := make([]string, count)
 	affix := make([]string, count)
@@ -163,19 +172,28 @@ func processDict(f *os.File) error {
 			affix[i] = s[1]
 		}
 		if verbose {
-			fmt.Printf("%d:%s/%s\n",i,words[i],affix[i])
+			fmt.Fprintf(os.Stderr, "%d:\n",i)
+			fmt.Fprintf(os.Stderr, "%s/%s\n",words[i],affix[i])
 		}
 		fmt.Printf("%s\n", words[i])
 		if len(s) > 1 {
-			for _,x := range s[1] {
-				key := fmt.Sprintf("%c", x)
-				//fmt.Printf("key: %v\n", key)
+			var flags []string
+			if numflags {
+				flags = commaRE.FindAllString(s[1], -1)
+			} else {
+				flags = make([]string, len(s[1]))
+				for i,x := range s[1] {
+					flags[i] = fmt.Sprintf("%c", x)
+				}
+			}
+			for _,key := range flags {
+				//fmt.Fprintf(os.Stderr, "key: %v\n", key)
 				r, ok := rules[key]
 				if !ok {
-					fmt.Printf("%s not found\n", key)
+					fmt.Fprintf(os.Stderr, "%s not found\n", key)
 					continue
 				}
-				//fmt.Printf("%v\n", r)
+				//fmt.Fprintf(os.Stderr, "%v\n", r)
 				for _,a := range r.affix {
 					x := s[0]
 					if r.suffix {
@@ -183,7 +201,7 @@ func processDict(f *os.File) error {
 							if a.strip != "" {
 								x = x[:len(x)-len(a.strip)]
 							}
-							fmt.Printf("%s%s\n", x, a.affix)
+							fmt.Printf("%s\n", x+ a.affix)
 							break
 						}
 
@@ -193,13 +211,13 @@ func processDict(f *os.File) error {
 						if a.strip != "" {
 							x = x[:len(x)-len(a.strip)]
 						}
-						fmt.Printf("%s%s\n", x, a.affix)
+						fmt.Printf("%s\n", x+a.affix)
 					} else {
 						if a.cond == "" {
 							if a.strip != "" {
 								x = x[len(a.strip):]
 							}
-							fmt.Printf("%s%s\n", a.affix,x)
+							fmt.Printf("%s\n", a.affix+x)
 							break
 						}
 						if a.re.FindString(s[0]) == "" {
@@ -208,7 +226,7 @@ func processDict(f *os.File) error {
 						if a.strip != "" {
 							x = x[len(a.strip):]
 						}
-						fmt.Printf("%s%s\n", a.affix,x)
+						fmt.Printf("%s\n", a.affix+x)
 					}
 				}
 			}
