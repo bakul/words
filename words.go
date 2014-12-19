@@ -29,6 +29,7 @@ type rule struct {
 	cross		bool	
 	ln		int
 	suffix		bool
+	need		bool
 	affix		[]*affix
 }
 
@@ -37,7 +38,11 @@ var rules map[string]*rule
 var flagv = flag.Bool("v", false, "print verbose output")
 var verbose bool
 
-var numflags bool
+var (
+	numflags bool
+	flaglen = 1
+	needaffix string	// tags stems in a dictionary
+)
 
 type affixReader struct {
 	r	*bufio.Reader
@@ -72,13 +77,42 @@ func (a *affixReader) getRule() []string {
 			continue
 		}
 		//fmt.Fprintf(os.Stderr, "%d '%s'\n", len(arg), arg[0])
-		if arg[0] == "PFX" || arg[0] == "SFX" {
-			return arg
-		}
-		if arg[0] == "FLAG" {
-			if len(arg) > 1 && arg[1] == "num" {
-				numflags = true
+		switch arg[0] {
+		default:
+			fmt.Fprintf(os.Stderr, "%d: invalid option: %s\n", a.ln, arg[0])
+		case "FLAG":
+			if len(arg) == 1 {
+				fmt.Fprintf(os.Stderr, "%d: FLAG needs an argument\n", a.ln)
+				continue
 			}
+			switch arg[1] {
+			case "num":
+				numflags = true
+			case "long":
+				flaglen = 2
+			default:
+				fmt.Fprintf(os.Stderr, "%d: invalid FLAG value: %s\n", a.ln, arg[1])
+			}
+
+		case "PFX", "SFX":
+			return arg
+
+		case "SET":
+			if len(arg) == 1 || arg[1] != "UTF-8" {
+				fmt.Fprintf(os.Stderr, "%d: only UTF-8 can be set\n", a.ln)
+			}
+
+		case "TRY": // ignore for now
+		case "NEEDAFFIX":
+			if len(arg) < 2 {
+				fmt.Fprintf(os.Stderr, "%d: needs a flag arg\n", a.ln)
+				continue
+			}
+			if needaffix != "" {
+				fmt.Fprintf(os.Stderr, "%d: NEEDAFIX already specified as %s\n", a.ln, needaffix)
+				continue
+			}
+			needaffix = arg[1]
 		}
 	}
 }
@@ -144,6 +178,92 @@ func processRules(f *os.File) {
 			fmt.Fprintf(os.Stderr, "%v\n", r)
 		}
 	}
+	if needaffix != "" {
+		rules[needaffix] = &rule{name:needaffix, need: true}
+	}
+}
+
+func getflags(aff string) (flags []string) {
+	if numflags {
+		flags = commaRE.FindAllString(aff, -1)
+	} else {
+		flags = make([]string, len(aff)/flaglen)
+		j := 0
+		for i,_ := range flags {
+			flags[i] = aff[j:j+flaglen]
+			j += flaglen
+		}
+	}
+	return
+}
+
+func expand(line string) {
+	s := strings.Split(line, "/")
+	if len(s) == 1 {
+		fmt.Printf("%s\n", s[0])
+		return
+	}
+	flags := getflags(s[1])
+
+	stem := false
+	for _,key := range flags {
+		r, ok := rules[key]
+		if ok && r.need {
+			stem = true
+			break
+		}
+	}
+	if !stem {
+		fmt.Printf("%s\n", s[0])
+	}
+
+	for _,key := range flags {
+		//fmt.Fprintf(os.Stderr, "key: %v\n", key)
+		r, ok := rules[key]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "%s not found\n", key)
+			continue
+		}
+		if r.need { // ignore this need flag
+			continue
+		}
+		//fmt.Fprintf(os.Stderr, "%v\n", r)
+		for _,a := range r.affix {
+			x := s[0]
+			if r.suffix {
+				if a.cond == "" {
+					if a.strip != "" {
+						x = x[:len(x)-len(a.strip)]
+					}
+					expand(x + a.affix)
+					break
+				}
+
+				if a.re.FindString(s[0]) == "" {
+					continue
+				}
+				if a.strip != "" {
+					x = x[:len(x)-len(a.strip)]
+				}
+				expand(fmt.Sprintf("%s\n", x+a.affix))
+			} else {
+				if a.cond == "" {
+					if a.strip != "" {
+						x = x[len(a.strip):]
+					}
+					expand(a.affix+x)
+					break
+				}
+				if a.re.FindString(s[0]) == "" {
+					continue
+				}
+				if a.strip != "" {
+					x = x[len(a.strip):]
+				}
+				expand(a.affix+x)
+			}
+		}
+	}
 }
 
 func processDict(f *os.File) error {
@@ -159,78 +279,18 @@ func processDict(f *os.File) error {
 	if verbose {
 		fmt.Fprintf(os.Stderr, "%d words\n\n", count)
 	}
-	words := make([]string, count)
-	affix := make([]string, count)
+	//words := make([]string, count)
+	//affix := make([]string, count)
 	for i := 0; ; i++ {
-		line, _, err = d.ReadLine()
+		l, _, err := d.ReadLine()
 		if err  == io.EOF {
 			break
 		}
-		s := strings.Split(string(line), "/")
-		words[i] = s[0]
-		if len(s) > 1 {
-			affix[i] = s[1]
-		}
+		line := string(l)
 		if verbose {
-			fmt.Fprintf(os.Stderr, "%d:\n",i)
-			fmt.Fprintf(os.Stderr, "%s/%s\n",words[i],affix[i])
+			fmt.Fprintf(os.Stderr, "%d: %s\n",i, line)
 		}
-		fmt.Printf("%s\n", words[i])
-		if len(s) > 1 {
-			var flags []string
-			if numflags {
-				flags = commaRE.FindAllString(s[1], -1)
-			} else {
-				flags = make([]string, len(s[1]))
-				for i,x := range s[1] {
-					flags[i] = fmt.Sprintf("%c", x)
-				}
-			}
-			for _,key := range flags {
-				//fmt.Fprintf(os.Stderr, "key: %v\n", key)
-				r, ok := rules[key]
-				if !ok {
-					fmt.Fprintf(os.Stderr, "%s not found\n", key)
-					continue
-				}
-				//fmt.Fprintf(os.Stderr, "%v\n", r)
-				for _,a := range r.affix {
-					x := s[0]
-					if r.suffix {
-						if a.cond == "" {
-							if a.strip != "" {
-								x = x[:len(x)-len(a.strip)]
-							}
-							fmt.Printf("%s\n", x+ a.affix)
-							break
-						}
-
-						if a.re.FindString(s[0]) == "" {
-							continue
-						}
-						if a.strip != "" {
-							x = x[:len(x)-len(a.strip)]
-						}
-						fmt.Printf("%s\n", x+a.affix)
-					} else {
-						if a.cond == "" {
-							if a.strip != "" {
-								x = x[len(a.strip):]
-							}
-							fmt.Printf("%s\n", a.affix+x)
-							break
-						}
-						if a.re.FindString(s[0]) == "" {
-							continue
-						}
-						if a.strip != "" {
-							x = x[len(a.strip):]
-						}
-						fmt.Printf("%s\n", a.affix+x)
-					}
-				}
-			}
-		}
+		expand(line)
 	}
 	return nil
 }
