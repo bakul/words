@@ -17,20 +17,34 @@ var (
 	commaRE = regexp.MustCompile("[^ \t,]+")
 )
 
-type affix struct {
+type affix interface {
+	expand(string)
+	String() string
+}
+
+type prefix struct {
 	strip		string
 	affix		string
 	cond		string
 	re		*regexp.Regexp
 	morph		[]string
 }
+
+type suffix struct {
+	strip		string
+	affix		string
+	cond		string
+	re		*regexp.Regexp
+	morph		[]string
+}
+
 type rule struct {
 	name		string
 	cross		bool	
 	ln		int
 	suffix		bool
 	need		bool
-	affix		[]*affix
+	affix		[]affix
 }
 
 var rules map[string]*rule
@@ -49,12 +63,20 @@ type affixReader struct {
 	ln	int
 }
 
-func (a *affix)String() string {
+func (a *prefix)String() string {
 	s := fmt.Sprintf("  strip:%v affix:%v cond:%v", a.strip, a.affix, a.cond)
 	if a.morph != nil {
 		return s + " morph:" + fmt.Sprintf("%v", a.morph)
 	}
-	return s;
+	return s
+}
+
+func (a *suffix)String() string {
+	s := fmt.Sprintf("  strip:%v affix:%v cond:%v", a.strip, a.affix, a.cond)
+	if a.morph != nil {
+		return s + " morph:" + fmt.Sprintf("%v", a.morph)
+	}
+	return s
 }
 
 func (r *rule)String() string {
@@ -117,6 +139,35 @@ func (a *affixReader) getRule() []string {
 	}
 }
 
+func newPrefix(strip string, aff string, cond string) (*prefix, error) {
+	var err error
+	var re *regexp.Regexp
+	if cond != "." {
+		re, err = regexp.Compile("^"+cond+".*")
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		cond = ""
+	}
+	return &prefix{strip:strip, affix: aff, cond: cond, re: re}, nil
+}
+
+
+func newSuffix(strip string, aff string, cond string) (*suffix, error) {
+	var err error
+	var re *regexp.Regexp
+	if cond != "." {
+		re, err = regexp.Compile(".*"+cond+"$")
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		cond = ""
+	}
+	return &suffix{strip:strip, affix: aff, cond: cond, re: re}, nil
+}
+
 
 func processRules(f *os.File) {
 	a := &affixReader{bufio.NewReader(f), 0}
@@ -139,12 +190,13 @@ func processRules(f *os.File) {
 			fmt.Fprintf(os.Stderr, "%s: badcount: %v\n", flag, arg[3])
 			continue
 		}
-		r = &rule{name:flag,ln:a.ln, affix:make([]*affix, count)}
+		r = &rule{name:flag,ln:a.ln, affix:make([]affix, count)}
 		if arg[2] == "Y" {
 			r.cross = true
 		}
+		var suffix bool
 		if arg[0] == "SFX" {
-			r.suffix = true
+			suffix = true
 		}
 		for i := range r.affix {
 			arg := a.getRule()
@@ -152,23 +204,19 @@ func processRules(f *os.File) {
 				fmt.Fprintf(os.Stderr, "%s: file too short\n", flag)
 				panic("bad affix file")
 			}
-			x := &affix{strip:arg[2], affix:arg[3]}
 			if arg[2] == "0" {
 				arg[2] = ""
 			}
-			x = &affix{strip:arg[2], affix:arg[3]}
-			if arg[4] != "." {
-				x.cond = arg[4]
-				if r.suffix {
-					x.re, err = regexp.Compile(".*"+x.cond+"$")
-				} else {
-					x.re, err = regexp.Compile("^"+x.cond+".*")
-				}
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s:%d: %v\n", err)
-				}
+			var affix affix
+			if suffix {
+				affix, err = newSuffix(arg[2], arg[3], arg[4])
+			} else {
+				affix, err = newPrefix(arg[2], arg[3], arg[4])
 			}
-			r.affix[i] = x
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%d: %v\n", a.ln, err)
+			}
+			r.affix[i] = affix
 		}
 		rules[flag] = r
 	}
@@ -197,7 +245,42 @@ func getflags(aff string) (flags []string) {
 	return
 }
 
-func expand(line string) {
+func (a *suffix) expand(word string) {
+	if a.cond == "" {
+		if a.strip != "" {
+			word = word[:len(word)-len(a.strip)]
+		}
+		expandAll(word + a.affix)
+		return
+	}
+
+	if a.re.FindString(word) == "" {
+		return
+	}
+	if a.strip != "" {
+		word = word[:len(word)-len(a.strip)]
+	}
+	expandAll(fmt.Sprintf("%s\n", word+a.affix))
+}
+
+func (a *prefix) expand(word string) {
+	if a.cond == "" {
+		if a.strip != "" {
+			word = word[len(a.strip):]
+		}
+		expandAll(a.affix+word)
+		return
+	}
+	if a.re.FindString(word) == "" {
+		return
+	}
+	if a.strip != "" {
+		word = word[len(a.strip):]
+	}
+	expandAll(a.affix+word)
+}
+
+func expandAll(line string) {
 	s := strings.Split(line, "/")
 	if len(s) == 1 {
 		fmt.Printf("%s\n", s[0])
@@ -229,39 +312,7 @@ func expand(line string) {
 		}
 		//fmt.Fprintf(os.Stderr, "%v\n", r)
 		for _,a := range r.affix {
-			x := s[0]
-			if r.suffix {
-				if a.cond == "" {
-					if a.strip != "" {
-						x = x[:len(x)-len(a.strip)]
-					}
-					expand(x + a.affix)
-					break
-				}
-
-				if a.re.FindString(s[0]) == "" {
-					continue
-				}
-				if a.strip != "" {
-					x = x[:len(x)-len(a.strip)]
-				}
-				expand(fmt.Sprintf("%s\n", x+a.affix))
-			} else {
-				if a.cond == "" {
-					if a.strip != "" {
-						x = x[len(a.strip):]
-					}
-					expand(a.affix+x)
-					break
-				}
-				if a.re.FindString(s[0]) == "" {
-					continue
-				}
-				if a.strip != "" {
-					x = x[len(a.strip):]
-				}
-				expand(a.affix+x)
-			}
+			a.expand(s[0])
 		}
 	}
 }
@@ -290,7 +341,7 @@ func processDict(f *os.File) error {
 		if verbose {
 			fmt.Fprintf(os.Stderr, "%d: %s\n",i, line)
 		}
-		expand(line)
+		expandAll(line)
 	}
 	return nil
 }
