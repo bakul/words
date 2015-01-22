@@ -89,12 +89,12 @@ func (r *rule)String() string {
 
 func (a *affixReader) getRule() []string {
 	for {
-		line, _, err := a.r.ReadLine()
+		line, err := a.r.ReadString('\n')
 		if err == io.EOF {
 			return nil
 		}
 		a.ln++
-		arg := spaceRE.FindAllString(string(line), -1)
+		arg := spaceRE.FindAllString(strings.TrimSpace(line), -1)
 		if arg == nil || len(arg) == 0 || arg[0][0] == '#' {
 			continue
 		}
@@ -207,6 +207,11 @@ func processRules(f *os.File) {
 			if arg[2] == "0" {
 				arg[2] = ""
 			}
+			if len(arg) < 5 {
+				//fmt.Fprintf(os.Stderr, "%d: not enough fields\n", a.ln)
+
+				arg = append(arg, ".")
+			}
 			var affix affix
 			if suffix {
 				affix, err = newSuffix(arg[2], arg[3], arg[4])
@@ -280,6 +285,8 @@ func (a *prefix) expand(word string) {
 	expandAll(a.affix+word)
 }
 
+var ln = 2
+
 func expandAll(line string) {
 	s := strings.Split(line, "/")
 	if len(s) == 1 {
@@ -304,7 +311,7 @@ func expandAll(line string) {
 		//fmt.Fprintf(os.Stderr, "key: %v\n", key)
 		r, ok := rules[key]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "%s not found\n", key)
+			fmt.Fprintf(os.Stderr, "%d: %s not found\n", ln, key)
 			continue
 		}
 		if r.need { // ignore this need flag
@@ -319,11 +326,11 @@ func expandAll(line string) {
 
 func processDict(f *os.File) error {
 	d := bufio.NewReader(f)
-	line, _, err := d.ReadLine()
+	line, err := d.ReadString('\n')
 	if err != nil {
 		return err
 	}
-	count, err := strconv.Atoi(string(line))
+	count, err := strconv.Atoi(strings.TrimSpace(line))
 	if err != nil {
 		panic(fmt.Sprintf("error: %v", err.Error()))
 	}
@@ -333,15 +340,16 @@ func processDict(f *os.File) error {
 	//words := make([]string, count)
 	//affix := make([]string, count)
 	for i := 0; ; i++ {
-		l, _, err := d.ReadLine()
+		line, err := d.ReadString('\n')
 		if err  == io.EOF {
 			break
 		}
-		line := string(l)
+		line = strings.TrimSpace(line)
 		if verbose {
-			fmt.Fprintf(os.Stderr, "%d: %s\n",i, line)
+			fmt.Fprintf(os.Stderr, "%d: |%s|\n",i, line)
 		}
 		expandAll(line)
+		ln++
 	}
 	return nil
 }
