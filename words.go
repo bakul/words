@@ -354,8 +354,13 @@ func processDict(f *os.File) error {
 	return nil
 }
 
+func errExit(msg string) {
+	fmt.Fprintf(os.Stderr, "%s", msg)
+	os.Exit(1)
+}
+
 func usage() {
-	panic("Usage: words aff_file dic_file\n")
+	errExit("Usage: words aff_file dic_file\n")
 }
 
 func main() {
@@ -371,11 +376,11 @@ func main() {
 	}
 	xaff, err := os.Open(aff)
 	if err != nil {
-		panic(aff + ":" + err.Error())
+		errExit(aff + ":" + err.Error())
 	}
 	xdict, err := os.Open(dic)
 	if err != nil {
-		panic(dic + ":" + err.Error())
+		errExit(dic + ":" + err.Error())
 	}
 	processRules(xaff)
 	processDict(xdict)
