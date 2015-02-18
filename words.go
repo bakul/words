@@ -213,6 +213,9 @@ func processRules(f *os.File) {
 				arg = append(arg, ".")
 			}
 			var affix affix
+			if arg[3] == "0" {
+				arg[3] = ""
+			}
 			if suffix {
 				affix, err = newSuffix(arg[2], arg[3], arg[4])
 			} else {
